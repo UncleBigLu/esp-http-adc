@@ -1,32 +1,50 @@
-//
-// Created by unclebiglu on 4/22/24.
-//
 #include "myutils.h"
 
-bool isFull(const struct SlidingWindow s){
-    return s.curSize == WINDOW_SIZE;
+struct slidingWindow
+{
+    uint32_t curPtr;
+    uint32_t* window;
+    double avg;
+    size_t curSize;
+    size_t windowSize;
+};
+
+bool isFull(const slidingWindowHandler handler)
+{
+    return handler->curSize == handler->windowSize;
 }
 
-struct SlidingWindow initWindow()
+slidingWindowHandler initWindow(const size_t windowSize)
 {
-    struct SlidingWindow s = {
-        .curPtr = 0,
-        .avg = 0,
-        .curSize = 0
-    };
-    return s;
+    slidingWindowHandler handler = malloc(sizeof(struct slidingWindow));
+    handler->window = malloc(windowSize * sizeof(uint32_t));
+    handler->avg = 0;
+    handler->curPtr = 0;
+    handler->curSize = 0;
+    handler->windowSize = windowSize;
+    return handler;
 }
 
-void push(struct SlidingWindow* s, const uint32_t val)
+void push(const slidingWindowHandler handler, const uint32_t val)
 {
-    if(isFull(*s))
+    if (isFull(handler))
     {
-        s->avg -= (double)s->window[s->curPtr] / WINDOW_SIZE;
-    }else
-    {
-        s->curSize++;
+        handler->avg -= (double)handler->window[handler->curPtr] / handler->windowSize;
     }
-    s->avg += (double)val / WINDOW_SIZE;
-    s->window[s->curPtr] = val;
-    s->curPtr = (s->curPtr+1) % WINDOW_SIZE;
+    else
+    {
+        handler->curSize++;
+    }
+    handler->avg += (double)val / handler->windowSize;
+    handler->window[handler->curPtr] = val;
+    handler->curPtr = (handler->curPtr + 1) % handler->windowSize;
+}
+
+double getAvg(const slidingWindowHandler handler)
+{
+    if (!isFull(handler))
+    {
+        return handler->avg * handler->windowSize / handler->curSize;
+    }
+    return handler->avg;
 }
