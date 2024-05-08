@@ -9,6 +9,8 @@
 #include "myutils.h"
 #include "esp_dsp.h"
 #include "adcutils.h"
+#include "http_adc_server.h"
+#include "freertos/stream_buffer.h"
 
 static TaskHandle_t s_task_handle;
 static const char* TAG = "freq_sample";
