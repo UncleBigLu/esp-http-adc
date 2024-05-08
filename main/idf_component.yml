@@ -1,6 +1,9 @@
 ## IDF Component Manager Manifest File
 dependencies:
   espressif/esp-dsp: "*"
+  protocol_examples_common:
+    path: ${IDF_PATH}/examples/common_components/protocol_examples_common
+
   ## Required IDF version
   idf:
     version: ">=4.1.0"

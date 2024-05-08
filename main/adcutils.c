@@ -1,7 +1,22 @@
 #include "adcutils.h"
+
+#include <http_adc_server.h>
+
 #include "esp_log.h"
 
+
 static const char* TAG = "adcutils";
+
+bool IRAM_ATTR conv_done_cb(adc_continuous_handle_t handle, const adc_continuous_evt_data_t* edata,
+                                     void* user_data)
+{
+    TaskHandle_t task_handle = (TaskHandle_t)user_data;
+    BaseType_t mustYield = pdFALSE;
+    //Notify that ADC continuous driver has done enough number of conversions
+    vTaskNotifyGiveFromISR(task_handle, &mustYield);
+
+    return (mustYield == pdTRUE);
+}
 
 void continuous_adc_init(adc_channel_t* channel, uint8_t channel_num, adc_continuous_handle_t* out_handle)
 {
@@ -36,4 +51,92 @@ void continuous_adc_init(adc_channel_t* channel, uint8_t channel_num, adc_contin
     ESP_ERROR_CHECK(adc_continuous_config(handle, &dig_cfg));
 
     *out_handle = handle;
+}
+
+void adc_sample_task(void* parameter)
+{
+    adc_sbuf_handle_t adc_sbuf_handle = (adc_sbuf_handle_t)parameter;
+
+    adc_continuous_handle_t adc_handle = get_adc_handle(adc_sbuf_handle);
+    if(adc_handle == NULL)
+    {
+        ESP_LOGE(TAG, "NULL adc handle");
+        return;
+    }
+    uint8_t sample_buf[ADC_CONV_FRAME_SZ];
+    StreamBufferHandle_t sbuf_handle = get_sbuf_handle(adc_sbuf_handle);
+    if(sbuf_handle == NULL)
+    {
+        ESP_LOGE(TAG, "NULL stream buffer handle");
+        return;
+    }
+    SemaphoreHandle_t mutex_handle = get_mutex(adc_sbuf_handle);
+    if(mutex_handle == NULL)
+    {
+        ESP_LOGE(TAG, "NULL mutex handle");
+        return;
+    }
+
+    while (1)
+    {
+        /* Block here if no data available */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        uint32_t out_bytes;
+        esp_err_t ret = adc_continuous_read(adc_handle, sample_buf, ADC_CONV_FRAME_SZ, &out_bytes, 0);
+
+        if (ret == ESP_ERR_TIMEOUT)
+        {
+            // No data available in the buffer, continue to self block and wait for new data
+            continue;
+        }
+        if (ret == ESP_ERR_INVALID_STATE)
+        {
+            ESP_LOGW(TAG, "ADC internal pool full. Check ADC sample rate");
+        }
+        if (ret == ESP_OK)
+        {
+            /* Forward data to Stream buffer */
+            for (int i = 0; i < out_bytes; i += SOC_ADC_DIGI_RESULT_BYTES)
+            {
+                adc_digi_output_data_t* p = (adc_digi_output_data_t*)&sample_buf[i];
+                uint32_t chan_num = EXAMPLE_ADC_GET_CHANNEL(p);
+                uint16_t data = EXAMPLE_ADC_GET_DATA(p);
+
+                /* If the data is valid */
+                if (chan_num < SOC_ADC_CHANNEL_NUM(EXAMPLE_ADC_UNIT))
+                {
+                    /* Forward data to Stream buffer */
+                    if (xStreamBufferSpacesAvailable(sbuf_handle) < sizeof(data))
+                    {
+                        ESP_LOGW(TAG, "Stream buffer full. ADC sample rate may larger than Wifi through put");
+                    }
+                    size_t send_bytes = xStreamBufferSend(sbuf_handle, &data, sizeof(data), portMAX_DELAY);
+                    if (send_bytes != sizeof(data))
+                    {
+                        ESP_LOGE(TAG, "Unexpected behavior.");
+                    }
+                }
+                else
+                {
+                    ESP_LOGW(TAG, "Invalid data");
+                }
+            }
+
+            /* Check if ADC should be stoped, which means server requires no more data */
+            if(xSemaphoreTake(mutex_handle, portMAX_DELAY) == pdTRUE)
+            {
+                if(get_adc_stop_flag(adc_sbuf_handle))
+                {
+                    ESP_LOGI(TAG, "Stopping ADC");
+                    ESP_ERROR_CHECK(adc_continuous_stop(adc_handle));
+                    ESP_LOGI(TAG, "Flush ADC pool");
+                    ESP_ERROR_CHECK(adc_continuous_flush_pool(adc_handle));
+                    xSemaphoreGive(mutex_handle);
+                    /* Self block until httpd enable adc again */
+                    continue;
+                }
+                xSemaphoreGive(mutex_handle);
+            }
+        }
+    }
 }

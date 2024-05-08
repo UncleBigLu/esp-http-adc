@@ -29,5 +29,8 @@
 
 
 void continuous_adc_init(adc_channel_t *channel, uint8_t channel_num, adc_continuous_handle_t *out_handle);
+void adc_sample_task(void* parameter);
+bool conv_done_cb(adc_continuous_handle_t handle, const adc_continuous_evt_data_t* edata,
+                                     void* user_data);
 
 #endif

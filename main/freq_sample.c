@@ -1,18 +1,22 @@
+#include <nvs_flash.h>
+#include <protocol_examples_common.h>
 #include <string.h>
 #include <stdio.h>
 #include "sdkconfig.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_adc/adc_continuous.h"
+#include "esp_event.h"
 #include "myutils.h"
-#include "esp_dsp.h"
 #include "adcutils.h"
 #include "http_adc_server.h"
 #include "freertos/stream_buffer.h"
+#include <esp_http_server.h>
 
-static TaskHandle_t s_task_handle;
+
 static const char* TAG = "freq_sample";
 
 #if CONFIG_IDF_TARGET_ESP32
@@ -27,107 +31,68 @@ static adc_channel_t channel[1] = {ADC_CHANNEL_2};
 /* Size of sliding window which stores data from ADC */
 #define WINDOW_SIZE 128
 
-static bool IRAM_ATTR s_conv_done_cb(adc_continuous_handle_t handle, const adc_continuous_evt_data_t* edata,
-                                     void* user_data)
-{
-    BaseType_t mustYield = pdFALSE;
-    //Notify that ADC continuous driver has done enough number of conversions
-    vTaskNotifyGiveFromISR(s_task_handle, &mustYield);
-
-    return (mustYield == pdTRUE);
-}
-
 
 void app_main(void)
 {
-    s_task_handle = xTaskGetCurrentTaskHandle();
+    /* Helper container to transmit EVERYTHING required into different tasks.. */
+    adc_sbuf_handle_t adc_sbuf_handle = NULL;
+    adc_sbuf_handle = init_adc_sbuf();
+    if (adc_sbuf_handle == NULL)
+    {
+        ESP_LOGE(TAG, "No memory for adc_sbuf_handle");
+        return;
+    }
 
-    // Regist callback
-    adc_continuous_handle_t handle = NULL;
-    continuous_adc_init(channel, sizeof(channel) / sizeof(adc_channel_t), &handle);
+    /* ADC initial */
+    adc_continuous_handle_t adc_handle = NULL;
+    continuous_adc_init(channel, sizeof(channel) / sizeof(adc_channel_t), &adc_handle);
+    set_adc_handle(adc_sbuf_handle, adc_handle);
 
+    /* Stream buffer */
+    StreamBufferHandle_t sbuf_handle = xStreamBufferCreate(
+        2*ADC_CONV_FRAME_SZ/SOC_ADC_DIGI_RESULT_BYTES*sizeof(uint16_t),
+        sizeof(uint16_t)
+    );
+    set_sbuf_handle(adc_sbuf_handle, sbuf_handle);
+
+    /* Mutex to control ADC stop */
+    SemaphoreHandle_t mutex_handle = xSemaphoreCreateMutex();
+    set_mutex(adc_sbuf_handle, mutex_handle);
+
+
+    /* Create ADC task
+     * Note that the task will block itself until httpd start adc sampling
+     *
+     * Initial adc_sbuf_handle first before pass it to other task
+     */
+    TaskHandle_t adc_task_handle = NULL;
+    if (xTaskCreate(adc_sample_task, "adc_sample_task",
+                    2048, adc_sbuf_handle, 1, adc_task_handle) != pdPASS)
+    {
+        ESP_LOGE(TAG, "ADC task creation failed");
+        return;
+    }
+    /* Register conversion done callback */
     adc_continuous_evt_cbs_t cbs = {
-        .on_conv_done = s_conv_done_cb,
+        .on_conv_done = conv_done_cb,
     };
-    ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(handle, &cbs, NULL));
+    ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(adc_handle, &cbs, adc_task_handle));
 
     // Print configration info
     ESP_LOGI(TAG, "Sample frequency: %d kHz, data per frame: %d\n", ADC_SAMPLE_RATE,
              ADC_CONV_FRAME_SZ/SOC_ADC_DIGI_RESULT_BYTES);
-    // Start Sampling
-    ESP_ERROR_CHECK(adc_continuous_start(handle));
 
-    esp_err_t ret;
-    uint8_t result[ADC_CONV_FRAME_SZ] = {0};
-    uint32_t ret_num = 0;
-    char unit[] = EXAMPLE_ADC_UNIT_STR(EXAMPLE_ADC_UNIT);
 
-    double high_val_avg = 0;
-    double low_val_avg = 0;
-    uint32_t data_cnt = 0, high_data_cnt = 0, low_data_cnt = 0;
+    /* Initial wifi */
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK(example_connect());
 
-    slidingWindowHandler swindow_handler = initWindow(WINDOW_SIZE);
+    ESP_ERROR_CHECK(start_server(adc_sbuf_handle));
 
     while (1)
     {
-        // Block here until data available
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        // Read all data out
-        while (1)
-        {
-            ret = adc_continuous_read(handle, result, ADC_CONV_FRAME_SZ, &ret_num, 0);
-            if (ret == ESP_ERR_TIMEOUT)
-            {
-                // No data available in the buffer
-                break;
-            }
-            else if (ret == ESP_OK)
-            {
-                for (int i = 0; i < ret_num; i += SOC_ADC_DIGI_RESULT_BYTES)
-                {
-                    adc_digi_output_data_t* p = (adc_digi_output_data_t*)&result[i];
-                    uint32_t chan_num = EXAMPLE_ADC_GET_CHANNEL(p);
-                    uint32_t data = EXAMPLE_ADC_GET_DATA(p);
-
-                    if (chan_num < SOC_ADC_CHANNEL_NUM(EXAMPLE_ADC_UNIT))
-                    {
-                        push(swindow_handler, data);
-                        if (isFull(swindow_handler))
-                        {
-                            if (data > getAvg(swindow_handler))
-                            {
-                                high_val_avg += (double)data;
-                                ++high_data_cnt;
-                            }
-                            else
-                            {
-                                low_val_avg += (double)data;
-                                ++low_data_cnt;
-                            }
-                            ++data_cnt;
-                        }
-                    }
-                    else
-                    {
-                        ESP_LOGW(TAG, "Invalid data [%s_%"PRIu32"_%"PRIx32"]", unit, chan_num, data);
-                    }
-                }
-                // Data process algorithm here
-                if (data_cnt >= ADC_SAMPLE_RATE)
-                {
-                    high_val_avg /= high_data_cnt;
-                    low_val_avg /= low_data_cnt;
-                    ESP_LOGI(TAG, "Avg power: %f\tHigh level: %f\tLow level: %f\t"
-                             "Frequency: wip\tDuty cycle: %f",
-                             getAvg(swindow_handler), high_val_avg, low_val_avg, (double)high_data_cnt/low_data_cnt);
-                    high_val_avg = 0;
-                    low_val_avg = 0;
-                    high_data_cnt = 0;
-                    low_data_cnt = 0;
-                    data_cnt = 0;
-                }
-            }
-        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
