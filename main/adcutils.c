@@ -7,13 +7,18 @@
 
 static const char* TAG = "adcutils";
 
+/* According to freeRTOS doc the Stream buffer will use task notify index 0.
+ * So use another index here.
+ */
+static const UBaseType_t uxIndexToNotify = 1;
+
 bool IRAM_ATTR conv_done_cb(adc_continuous_handle_t handle, const adc_continuous_evt_data_t* edata,
-                                     void* user_data)
+                            void* user_data)
 {
     TaskHandle_t task_handle = (TaskHandle_t)user_data;
     BaseType_t mustYield = pdFALSE;
     //Notify that ADC continuous driver has done enough number of conversions
-    vTaskNotifyGiveFromISR(task_handle, &mustYield);
+    vTaskNotifyGiveIndexedFromISR(task_handle, uxIndexToNotify, &mustYield);
 
     return (mustYield == pdTRUE);
 }
@@ -56,31 +61,30 @@ void continuous_adc_init(adc_channel_t* channel, uint8_t channel_num, adc_contin
 void adc_sample_task(void* parameter)
 {
     adc_sbuf_handle_t adc_sbuf_handle = (adc_sbuf_handle_t)parameter;
-
+    if (adc_sbuf_handle == NULL)
+    {
+        ESP_LOGE(TAG, "NULL sbuf handle");
+        return;
+    }
     adc_continuous_handle_t adc_handle = get_adc_handle(adc_sbuf_handle);
-    if(adc_handle == NULL)
+    if (adc_handle == NULL)
     {
         ESP_LOGE(TAG, "NULL adc handle");
         return;
     }
     uint8_t sample_buf[ADC_CONV_FRAME_SZ];
     StreamBufferHandle_t sbuf_handle = get_sbuf_handle(adc_sbuf_handle);
-    if(sbuf_handle == NULL)
+    if (sbuf_handle == NULL)
     {
         ESP_LOGE(TAG, "NULL stream buffer handle");
         return;
     }
-    SemaphoreHandle_t mutex_handle = get_mutex(adc_sbuf_handle);
-    if(mutex_handle == NULL)
-    {
-        ESP_LOGE(TAG, "NULL mutex handle");
-        return;
-    }
+
 
     while (1)
     {
         /* Block here if no data available */
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ulTaskNotifyTakeIndexed(uxIndexToNotify, pdTRUE, portMAX_DELAY);
         uint32_t out_bytes;
         esp_err_t ret = adc_continuous_read(adc_handle, sample_buf, ADC_CONV_FRAME_SZ, &out_bytes, 0);
 
@@ -91,7 +95,8 @@ void adc_sample_task(void* parameter)
         }
         if (ret == ESP_ERR_INVALID_STATE)
         {
-            ESP_LOGW(TAG, "ADC internal pool full. Check ADC sample rate");
+            ESP_LOGW(TAG, "ADC internal pool full. Flush Internal pool");
+            ESP_ERROR_CHECK(adc_continuous_flush_pool(adc_handle));
         }
         if (ret == ESP_OK)
         {
@@ -110,6 +115,7 @@ void adc_sample_task(void* parameter)
                     {
                         ESP_LOGW(TAG, "Stream buffer full. ADC sample rate may larger than Wifi through put");
                     }
+                    /* Will block here if no space available */
                     size_t send_bytes = xStreamBufferSend(sbuf_handle, &data, sizeof(data), portMAX_DELAY);
                     if (send_bytes != sizeof(data))
                     {
@@ -120,22 +126,6 @@ void adc_sample_task(void* parameter)
                 {
                     ESP_LOGW(TAG, "Invalid data");
                 }
-            }
-
-            /* Check if ADC should be stoped, which means server requires no more data */
-            if(xSemaphoreTake(mutex_handle, portMAX_DELAY) == pdTRUE)
-            {
-                if(get_adc_stop_flag(adc_sbuf_handle))
-                {
-                    ESP_LOGI(TAG, "Stopping ADC");
-                    ESP_ERROR_CHECK(adc_continuous_stop(adc_handle));
-                    ESP_LOGI(TAG, "Flush ADC pool");
-                    ESP_ERROR_CHECK(adc_continuous_flush_pool(adc_handle));
-                    xSemaphoreGive(mutex_handle);
-                    /* Self block until httpd enable adc again */
-                    continue;
-                }
-                xSemaphoreGive(mutex_handle);
             }
         }
     }

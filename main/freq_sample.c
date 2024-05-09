@@ -55,28 +55,25 @@ void app_main(void)
     );
     set_sbuf_handle(adc_sbuf_handle, sbuf_handle);
 
-    /* Mutex to control ADC stop */
-    SemaphoreHandle_t mutex_handle = xSemaphoreCreateMutex();
-    set_mutex(adc_sbuf_handle, mutex_handle);
 
-
-    /* Create ADC task
-     * Note that the task will block itself until httpd start adc sampling
-     *
-     * Initial adc_sbuf_handle first before pass it to other task
-     */
+    /* Create ADC task */
     TaskHandle_t adc_task_handle = NULL;
     if (xTaskCreate(adc_sample_task, "adc_sample_task",
-                    2048, adc_sbuf_handle, 1, adc_task_handle) != pdPASS)
+                    4096, adc_sbuf_handle, 3, &adc_task_handle) != pdPASS)
     {
         ESP_LOGE(TAG, "ADC task creation failed");
         return;
     }
+
     /* Register conversion done callback */
     adc_continuous_evt_cbs_t cbs = {
         .on_conv_done = conv_done_cb,
     };
     ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(adc_handle, &cbs, adc_task_handle));
+
+    /* Start ADC */
+    ESP_LOGI(TAG, "Start ADC sampling");
+    ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
 
     // Print configration info
     ESP_LOGI(TAG, "Sample frequency: %d kHz, data per frame: %d\n", ADC_SAMPLE_RATE,

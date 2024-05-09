@@ -21,6 +21,12 @@ void set_adc_stop_flag(adc_sbuf_handle_t handle, bool flag);
 bool get_adc_stop_flag(adc_sbuf_handle_t handle);
 void set_mutex(adc_sbuf_handle_t handle, SemaphoreHandle_t mutex_handle);
 SemaphoreHandle_t get_mutex(adc_sbuf_handle_t handle);
+void set_adc_start_flag(adc_sbuf_handle_t handle, bool flag);
+bool get_adc_start_flag(adc_sbuf_handle_t handle);
+void set_task_handle(adc_sbuf_handle_t handle, TaskHandle_t task_handle);
+TaskHandle_t get_task_handle(adc_sbuf_handle_t handle);
+void set_binSemaphore(adc_sbuf_handle_t handle, SemaphoreHandle_t semaphore_handle);
+SemaphoreHandle_t get_binSemaphore_handle(adc_sbuf_handle_t handle);
 
 esp_err_t start_server(adc_sbuf_handle_t);
 

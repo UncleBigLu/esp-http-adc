@@ -25,7 +25,7 @@
  */
 #define ADC_CONV_FRAME_SZ                   256
 
-#define ADC_SAMPLE_RATE                     20000
+#define ADC_SAMPLE_RATE                     10000
 
 
 void continuous_adc_init(adc_channel_t *channel, uint8_t channel_num, adc_continuous_handle_t *out_handle);
