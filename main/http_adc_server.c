@@ -194,6 +194,11 @@ static esp_err_t download_get_handler(httpd_req_t* req)
                         break;
                     }
                     adc_sample_num -= chunk_size / sizeof(uint16_t);
+                    if(adc_sample_num <= 0)
+                    {
+                        /* Send a chunk with zero-length to indicate end of transfer */
+                        httpd_resp_send_chunk(req, NULL, 0);
+                    }
                 }
             }
         }
