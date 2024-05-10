@@ -149,6 +149,9 @@ static esp_err_t download_get_handler(httpd_req_t* req)
                 /* Config http response header */
                 /* As we are transfering binary u16 data.. */
                 ESP_ERROR_CHECK(httpd_resp_set_type(req, "application/octet-stream"));
+                /* Specify filename in case a browser is used as http client */
+                ESP_ERROR_CHECK(httpd_resp_set_hdr(req,
+                    "Content-Disposition", "attachment; filename=\"sample.bin\""));
 
                 /* Send ADC data back */
 
