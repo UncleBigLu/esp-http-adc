@@ -2,9 +2,12 @@ Send adc sample to host through http
 
 Tested on **ESP32S3** board.
 
-Usage:
+## Usage:
 
 `curl http_sample.lan/?sample_num=<required sample num> > sample.bin`
+
+**Warning**: Concurrency GET requests is **NOT** supported(i.e, only one GET request should be sent at a time) as we use
+stream buffer to transmit data between tasks.
 
 ## ADC related configuration
 
